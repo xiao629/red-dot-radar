@@ -1,0 +1,11 @@
+Windows EXE 雲端編譯（你的電腦不需要安裝 Python）
+
+1. 登入 GitHub，建立新的 Private repository。
+2. 解壓縮本專案 ZIP，將裡面所有檔案與 .github 資料夾完整上傳到 repository 根目錄。
+3. 確認 main.py、requirements.txt 在根目錄，並確認 .github/workflows/build-windows.yml 路徑正確。
+4. 開啟 repository 的 Actions。
+5. 選擇左側「Build Windows EXE」，按「Run workflow」。
+6. 工作完成後，進入該次執行頁面最下方 Artifacts，下載「小地圖紅點雷達-Windows-x64」。
+7. 解壓縮 Artifact，即可取得小地圖紅點雷達.exe。
+
+這份流程使用 GitHub 提供的 Windows x64 編譯機。尚未執行 GitHub Actions 前，不會有已編譯完成的 EXE。
