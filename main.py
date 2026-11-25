@@ -26,66 +26,81 @@ APP_TITLE = "小地圖紅點雷達偵測器"
 
 
 class RegionSelector:
-    """在所有實體螢幕建立遮罩，使用 Windows 桌面座標回傳選取範圍。"""
+    """每台實體螢幕各建立一個遮罩，使用 Windows 虛擬桌面座標框選。"""
     def __init__(self, parent: tk.Tk, callback):
         self.parent = parent
         self.callback = callback
+        self.callback_done = False
         self.start_x = self.start_y = 0
         self.rect = None
         self.active_canvas = None
         self.windows = []
-        self.monitors = []
-        self.cancelled = False
 
-        # MSS 的 monitors[1:] 是每一台實體螢幕，座標可包含負值。
+        # MSS 回傳的是 Windows 虛擬桌面的實體像素座標，可能含負值。
         with mss.mss() as sct:
-            self.monitors = [dict(m) for m in sct.monitors[1:]]
-        if not self.monitors:
-            self.monitors = [{"left": 0, "top": 0,
-                              "width": parent.winfo_screenwidth(),
-                              "height": parent.winfo_screenheight()}]
+            monitors = [dict(m) for m in sct.monitors[1:]]
+        if not monitors:
+            monitors = [{"left": 0, "top": 0,
+                         "width": parent.winfo_screenwidth(),
+                         "height": parent.winfo_screenheight()}]
 
-        for monitor in self.monitors:
-            win = tk.Toplevel(parent)
-            win.overrideredirect(True)
-            win.attributes("-topmost", True)
-            win.attributes("-alpha", 0.28)
-            win.geometry(f"{monitor['width']}x{monitor['height']}+0+0")
-            canvas = tk.Canvas(win, bg="#202020", cursor="crosshair",
-                               highlightthickness=0)
-            canvas.pack(fill="both", expand=True)
-            if not self.windows:
-                canvas.create_text(
-                    24, 24, anchor="nw",
-                    text="請按住滑鼠左鍵拖曳框選小地圖，放開即可完成；按 Esc 取消",
-                    fill="white", font=("Microsoft JhengHei", 16, "bold")
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            HWND_TOPMOST = -1
+            SWP_NOACTIVATE = 0x0010
+            SWP_SHOWWINDOW = 0x0040
+            for index, mon in enumerate(monitors):
+                win = tk.Toplevel(parent)
+                win.overrideredirect(True)
+                win.attributes("-topmost", True)
+                win.attributes("-alpha", 0.28)
+                # 先建立視窗，再以原生 HWND 將外框放到螢幕的絕對座標。
+                win.geometry(f"{mon['width']}x{mon['height']}+0+0")
+                canvas = tk.Canvas(win, bg="#202020", cursor="crosshair",
+                                   highlightthickness=0, bd=0)
+                canvas.pack(fill="both", expand=True)
+                if index == 0:
+                    canvas.create_text(
+                        24, 24, anchor="nw",
+                        text="請在任一螢幕按住滑鼠左鍵拖曳框選小地圖；放開完成，Esc 取消",
+                        fill="white", font=("Microsoft JhengHei", 16, "bold")
+                    )
+                canvas.bind("<ButtonPress-1>", self.on_down)
+                canvas.bind("<B1-Motion>", self.on_move)
+                canvas.bind("<ButtonRelease-1>", self.on_up)
+                win.bind_all("<Escape>", lambda _e: self.cancel())
+                self.windows.append((win, canvas, mon))
+                win.update_idletasks()
+                # wm_frame() 是 Windows 真正的頂層視窗 HWND；winfo_id() 在
+                # 某些 Tk 版本回傳的是內層 client HWND，直接移動會定位錯誤。
+                hwnd = int(win.wm_frame(), 0)
+                user32.SetWindowPos(
+                    hwnd, HWND_TOPMOST, int(mon["left"]), int(mon["top"]),
+                    int(mon["width"]), int(mon["height"]),
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW
                 )
-            canvas.bind("<ButtonPress-1>", self.on_down)
-            canvas.bind("<B1-Motion>", self.on_move)
-            canvas.bind("<ButtonRelease-1>", self.on_up)
-            win.bind("<Escape>", lambda _e: self.cancel())
-            self.windows.append((win, canvas, monitor))
+                win.update_idletasks()
+            # 不強制把焦點鎖在主螢幕；使用者可直接點擊任一螢幕的遮罩。
+            self.windows[0][0].lift()
+        except Exception:
+            self._destroy_windows()
+            raise
 
-        # Tk geometry 對負座標的解讀可能是距離右/下邊緣；用 SetWindowPos
-        # 直接指定 Windows 虛擬桌面絕對座標，支援副螢幕位於左側或上方。
-        self.parent.update_idletasks()
-        user32 = __import__("ctypes").windll.user32
-        HWND_TOPMOST = -1
-        SWP_SHOWWINDOW = 0x0040
-        for win, _canvas, mon in self.windows:
-            win.update_idletasks()
-            hwnd = win.winfo_id()
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, int(mon["left"]),
-                                int(mon["top"]), int(mon["width"]),
-                                int(mon["height"]), SWP_SHOWWINDOW)
-        self.windows[0][0].focus_force()
+    def _monitor_for_canvas(self, canvas):
+        for _win, item_canvas, mon in self.windows:
+            if item_canvas is canvas:
+                return mon
+        return None
 
     def on_down(self, event):
         self.start_x, self.start_y = event.x_root, event.y_root
         self.active_canvas = event.widget
-        if self.rect:
+        mon = self._monitor_for_canvas(self.active_canvas)
+        if mon is None:
+            return
+        if self.rect is not None:
             self.active_canvas.delete(self.rect)
-        mon = next(m for _w, c, m in self.windows if c is self.active_canvas)
         x, y = self.start_x - mon["left"], self.start_y - mon["top"]
         self.rect = self.active_canvas.create_rectangle(
             x, y, x, y, outline="#00ff88", width=3, fill=""
@@ -94,16 +109,21 @@ class RegionSelector:
     def on_move(self, event):
         if self.rect is None or self.active_canvas is None:
             return
-        mon = next(m for _w, c, m in self.windows if c is self.active_canvas)
+        mon = self._monitor_for_canvas(self.active_canvas)
+        if mon is None:
+            return
         x1, y1 = self.start_x - mon["left"], self.start_y - mon["top"]
         x2, y2 = event.x_root - mon["left"], event.y_root - mon["top"]
         self.active_canvas.coords(self.rect, x1, y1, x2, y2)
 
     def on_up(self, event):
+        if self.callback_done or self.active_canvas is None:
+            return
         x1, y1 = self.start_x, self.start_y
         x2, y2 = event.x_root, event.y_root
         left, top = min(x1, x2), min(y1, y2)
         width, height = abs(x2 - x1), abs(y2 - y1)
+        self.callback_done = True
         self._destroy_windows()
         if width < 20 or height < 20:
             self.parent.deiconify()
@@ -122,6 +142,9 @@ class RegionSelector:
         self.windows.clear()
 
     def cancel(self):
+        if self.callback_done:
+            return
+        self.callback_done = True
         self._destroy_windows()
         self.parent.deiconify()
         self.parent.lift()
@@ -383,17 +406,27 @@ class RadarApp:
         self.root.destroy()
 
 
-def main():
-    # 讓 Tk 與 MSS 使用一致的實體像素座標，降低不同縮放比例造成的偏移。
+def enable_windows_dpi_awareness():
+    """讓 Tk、滑鼠事件與 MSS 使用一致的實體像素座標（Windows 10/11）。"""
+    if __import__("sys").platform != "win32":
+        return
     try:
         import ctypes
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     except Exception:
         try:
             import ctypes
-            ctypes.windll.user32.SetProcessDPIAware()
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
-            pass
+            try:
+                import ctypes
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+
+
+def main():
+    enable_windows_dpi_awareness()
     root = tk.Tk()
     try:
         style = ttk.Style()
