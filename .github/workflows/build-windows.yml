@@ -35,4 +35,3 @@ jobs:
         with:
           name: 小地圖紅點雷達-Windows-x64
           path: dist/小地圖紅點雷達.exe
-S
